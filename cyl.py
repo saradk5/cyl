@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""cyl - Complete Your Lessons.
 
-Status dashboard and bulk lesson completion for c4mpus.com.
-Run with no arguments for the interactive menu.
-
-Per lesson, completion replicates exactly what the web UI does:
-    POST /tracking/lesson-status   -> does a record already exist?
-    POST /tracking/start           -> create it (if not)
-    POST /tracking/mark-as-complete
-
-Auth is a bearer JWT - the same one your browser sends.
-"""
 import argparse
 import base64
 import http.client
