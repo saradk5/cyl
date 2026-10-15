@@ -194,11 +194,30 @@ def bar(done, total, width=22):
     if not total:
         return col("slate", empty * width)
     filled = round(width * done / total)
+    if done < total:            # 686/689 rounds to a full bar - keep a gap
+        filled = min(filled, width - 1)
+    if done:                    # and show a sliver the moment one is done
+        filled = max(filled, 1)
     return col("azure", full * filled) + col("slate", empty * (width - filled))
 
 
 def pct(done, total):
-    return f"{round(100 * done / total) if total else 0:>3}%"
+    """Rounds, except at the ends: only a finished set reads 100%, and any
+    progress at all reads at least 1%. 686/689 is 99%, not done."""
+    if not total or not done:
+        return "  0%"
+    if done >= total:
+        return "100%"
+    return f"{min(99, max(1, round(100 * done / total))):>3}%"
+
+
+def wk(week, width=5):
+    """Not every lesson comes back with a week number; "wk?" beats a crash."""
+    return f"wk{(week if week is not None else '?'):<{width}}"
+
+
+def plural(n, word):
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
 def human_time(seconds):
@@ -221,14 +240,32 @@ def rule(label=""):
 
 # ------------------------------------------------------------------------ auth
 
-GRAB_TOKEN_HELP = f"""\
-{b('Get your token from the browser:')}
-  1. Open https://c4mpus.com and log in
-  2. Press F12 -> {col('teal', 'Network')} tab, click any request to api.c4mpus.com
-  3. Right-click it -> {col('teal', 'Copy')} -> {col('teal', 'Copy as cURL')}
+# One line to paste into the browser console. c4mpus keeps the JWT in the
+# localStorage key "_auth_"; the storage sweep is insurance in case that
+# changes. copy() is a devtools helper, so the token goes straight to the
+# clipboard and never lands in terminal scrollback or a screenshot.
+CONSOLE_SNIPPET = (
+    r'(()=>{const R=/eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]+/,'
+    r'hunt=s=>Object.keys(s).map(k=>R.exec(s[k])).find(Boolean),'
+    r'm=R.exec(localStorage._auth_||"")||hunt(localStorage)||hunt(sessionStorage);'
+    r'if(!m)return console.log("cyl: no token here - logged in?");'
+    r'copy(m[0]);console.log("cyl: token copied, nothing was sent anywhere")})()'
+)
 
-Then paste it here. {mute('cyl finds the token inside whatever you paste -')}
-{mute('a raw eyJ... string, a Bearer header, or a whole cURL command.')}"""
+GRAB_TOKEN_HELP = f"""\
+{b('Get your token in three steps:')}
+  1. Open https://c4mpus.com and log in
+  2. Press F12, open the {col('teal', 'Console')} tab
+     {mute('Chrome and Edge block the first paste: type')} {col('gold', 'allow pasting')}{mute(', hit Enter.')}
+  3. Paste this line and press Enter:
+
+{col('cream', CONSOLE_SNIPPET)}
+
+{b('Then press Enter here')} {mute('- cyl takes it off your clipboard.')}
+{mute('It only reads your own token and sends it nowhere.')}
+
+{mute('Console blocked? Network tab -> any api.c4mpus.com request -> Copy as cURL,')}
+{mute('then paste that instead. cyl digs the token out of whatever you paste.')}"""
 
 
 class ApiError(Exception):
@@ -279,7 +316,7 @@ def save_token(token):
 def prompt_for_token():
     print("\n" + GRAB_TOKEN_HELP + "\n")
     for attempt in range(3):
-        raw = input(col("teal", "Paste here") + mute(" (or press Enter to read your clipboard)")
+        raw = input(col("teal", "Press Enter") + mute(" to read your clipboard, or paste a token")
                     + col("teal", " > "))
         if not raw.strip():
             raw = read_clipboard() or ""
@@ -305,7 +342,7 @@ def load_token(cli_token, interactive):
             return extract_jwt(val)
     if interactive and sys.stdin.isatty():
         return prompt_for_token()
-    sys.exit("No token. Run cyl with no arguments to set one up, "
+    sys.exit("No token. Run " + col("teal", "cyl login") + " to set one up, "
              "or pass --token / set CYL_TOKEN.")
 
 
@@ -469,6 +506,7 @@ def scan(client, modules, done=None, note="scanning", workers=8):
 def render_status(rows, scope):
     total = sum(r["total"] for r in rows)
     done = sum(r["done"] for r in rows)
+    gradeable = [r for r in rows if r["total"]]
     finished = [r for r in rows if r["total"] and r["done"] == r["total"]]
     untouched = [r for r in rows if r["total"] and not r["done"]]
     partial = [r for r in rows if r["done"] and r["done"] < r["total"]]
@@ -494,7 +532,7 @@ def render_status(rows, scope):
             nfin = sum(1 for r in yr if r["total"] and r["done"] == r["total"])
             print(f"  {y:<11} {bar(yd, yt)} {b(pct(yd, yt))}  "
                   + col("teal", f"{yd:>4}") + mute(f"/{yt}".ljust(8))
-                  + mute(f"{len(yr)} modules, {nfin} finished"))
+                  + mute(f"{plural(len(yr), 'module')}, {nfin} finished"))
             print()
 
     rule("highlights")
@@ -509,10 +547,10 @@ def render_status(rows, scope):
             print("  " + mute(f"{'biggest gap':<22}") + f" {biggest['title']} "
                   + mute("· ") + col("brick", f"{biggest['total'] - biggest['done']} left"))
     print("  " + mute(f"{'finished modules':<22}") + " "
-          + col("sage", str(len(finished))) + mute(f" of {len(rows)}"))
+          + col("sage", str(len(finished))) + mute(f" of {len(gradeable)}"))
     if untouched:
         print("  " + mute(f"{'not started':<22}") + " "
-              + col("stone", f"{len(untouched)} modules"))
+              + col("stone", plural(len(untouched), "module")))
 
     worst_weeks = {}
     for r in rows:
@@ -521,7 +559,7 @@ def render_status(rows, scope):
     if worst_weeks:
         top = sorted(worst_weeks.items(), key=lambda kv: -kv[1])[:5]
         print("  " + mute(f"{'weeks most behind':<22}") + " "
-              + mute(" · ").join(f"wk{w} {col('gold', str(n))}" for w, n in top))
+              + mute(" · ").join(f"{wk(w, 0)} {col('gold', str(n))}" for w, n in top))
     print()
 
 
@@ -591,7 +629,7 @@ def execute(client, rows, args, what):
                   + (f"{left:>4} remaining" if left else mute("   - complete")))
     else:
         for _, l in jobs:
-            print("    " + mute(f"wk{l['week']:<5}") + f" {l['title']}")
+            print("    " + mute(wk(l["week"])) + f" {l['title']}")
     print(f"\n  {col('teal', str(len(jobs)))} lesson(s) across "
           f"{col('teal', str(len({r['slug'] for r, _ in jobs})))} module(s)")
 
@@ -659,7 +697,7 @@ def complete_flow(client, args, modules):
         def year_label(y):
             yr = [r for r in all_rows if r["year"] == y]
             yd, yt = sum(r["done"] for r in yr), sum(r["total"] for r in yr)
-            return (f"{y:<12}" + mute(f"{len(yr)} modules".ljust(11)) + "  "
+            return (f"{y:<12}" + mute(plural(len(yr), "module").ljust(11)) + "  "
                     + mute(f"{yd}/{yt}".rjust(8)) + "  " + progress_tag(yd, yt))
 
         total_done = sum(r["done"] for r in all_rows)
@@ -761,7 +799,7 @@ def cmd_lessons(client, args):
         todo = {l["id"] for l in r["todo"]}
         for l in r["lessons"]:
             mark = " " if l["id"] in todo else col("sage", "x")
-            print(f"  {mark}  " + mute(f"wk{l['week']:<5}") + "  "
+            print(f"  {mark}  " + mute(wk(l["week"])) + "  "
                   + mute(l["id"]) + f"  {l['title']}")
 
 
@@ -772,7 +810,7 @@ def cmd_complete(client, args):
     if args.dry_run:
         jobs = [(r, l) for r in rows for l in r["todo"]]
         for r, l in jobs:
-            print(f"  {r['slug']:<58} wk{str(l['week']):<4} {l['title']}")
+            print(f"  {r['slug']:<58} {wk(l['week'], 4)} {l['title']}")
         print(f"\n{len(jobs)} lesson(s). " + col("gold", "Dry run - nothing was sent."))
         return
     execute(client, rows, args, "selection")
@@ -804,6 +842,10 @@ def main():
                         help="module slug (or unique substring); repeatable")
         sp.add_argument("--all", action="store_true", help="every enrolled module, every year")
 
+    sp = sub.add_parser("login", help="grab and save a fresh token")
+    sp.add_argument("--snippet", action="store_true",
+                    help="print just the console one-liner (pipe it to pbcopy)")
+
     sub.add_parser("modules", help="list enrolled modules").set_defaults(fn=cmd_modules)
 
     sp = sub.add_parser("status", help="progress dashboard")
@@ -832,17 +874,34 @@ def main():
         sys.exit("Pass -m <module> (repeatable) or --all, "
                  "or run with no arguments to pick interactively.")
 
+    # login runs before load_token: it is how you get a token in the first place.
+    if args.cmd == "login":
+        if args.snippet:
+            print(CONSOLE_SNIPPET)
+            return
+        if not args.quiet:
+            banner()
+        if not sys.stdin.isatty():
+            sys.exit("cyl login needs a terminal. Use --snippet, "
+                     "or pass --token / set CYL_TOKEN.")
+        prompt_for_token()
+        return
+
     if args.cmd is None and not args.quiet:
         banner()
 
     token = load_token(args.token, interactive=args.cmd is None)
     who, exp, _ = describe_token(token)
+    if exp and exp <= datetime.datetime.now():
+        TOKEN_FILE.unlink(missing_ok=True)
+        print(col("brick", f"Token expired {exp:%Y-%m-%d %H:%M}") + " - discarded.")
+        if not (args.cmd is None and sys.stdin.isatty()):
+            sys.exit("\n" + GRAB_TOKEN_HELP + "\n\n"
+                     + mute("Or just run ") + col("teal", "cyl login") + ".")
+        token = prompt_for_token()
+        who, exp, _ = describe_token(token)
     if exp:
         left = exp - datetime.datetime.now()
-        if left.total_seconds() < 0:
-            TOKEN_FILE.unlink(missing_ok=True)
-            sys.exit(col("brick", f"Token expired {exp:%Y-%m-%d %H:%M}") + " - discarded.\n\n"
-                     + GRAB_TOKEN_HELP)
         tone = "gold" if left.days < 1 else "stone"
         print(f"  {col('sage', '✓')} {b(who)}  "
               + col(tone, f"token valid {left.days}d {left.seconds // 3600}h")
