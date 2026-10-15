@@ -18,6 +18,7 @@ import datetime
 import json
 import os
 import pathlib
+import random
 import re
 import shutil
 import ssl
@@ -49,7 +50,8 @@ PALETTE = {
     "gold":   ("d9a441", "33"),      # brand / in-progress
     "ember":  ("8a5f22", "33;2"),    # the logo's drop shadow
     "cream":  ("ded5c6", "37"),      # primary text
-    "sage":   ("7fa65c", "32"),      # done / success
+    "sage":   ("3fb950", "32"),      # done / success
+    "azure":  ("58a6ff", "94"),      # progress bar fill
     "teal":   ("5f9ea0", "36"),      # interactive, numbers
     "brick":  ("bf5b48", "31"),      # failure
     "stone":  ("7d766c", "90"),      # secondary text
@@ -65,6 +67,16 @@ THEMES = {
     "plum":      (("b07aa8", "35"), ("553049", "35;2")),   # muted violet
 }
 THEME = "gold"
+
+# (filled, empty) glyph pairs for the progress bar.
+BAR_STYLES = {
+    "boxes":  ("■", "□"),
+    "blocks": ("▰", "▱"),
+    "solid":  ("█", "░"),
+}
+BAR = "boxes"
+
+FAREWELLS = ("Bye.", "Adios.", "Au revoir.")
 
 COLOR = True
 TRUECOLOR = True
@@ -121,11 +133,11 @@ def banner():
 
 
 def bar(done, total, width=22):
+    full, empty = BAR_STYLES.get(BAR, BAR_STYLES["boxes"])
     if not total:
-        return col("slate", "─" * width)
+        return col("slate", empty * width)
     filled = round(width * done / total)
-    tone = "sage" if done == total else ("gold" if done else "slate")
-    return col(tone, "█" * filled) + col("slate", "░" * (width - filled))
+    return col("azure", full * filled) + col("slate", empty * (width - filled))
 
 
 def pct(done, total):
@@ -428,20 +440,6 @@ def render_status(rows, scope):
                   + mute(f"{len(yr)} modules, {nfin} finished"))
             print()
 
-    rule("modules")
-    for y in years:
-        if len(years) > 1:
-            print(f"  {col('stone', y, bold=True)}")
-        for r in sorted((x for x in rows if x["year"] == y),
-                        key=lambda x: (x["done"] == x["total"], -(x["total"] - x["done"]))):
-            left = r["total"] - r["done"]
-            tail = (col("sage", "complete") if r["total"] and not left
-                    else col("gold", f"{left} left") if r["done"]
-                    else col("stone", f"{left} left · not started") if r["total"]
-                    else mute("no lessons"))
-            print(f"    {r['title'][:46]:<46} {bar(r['done'], r['total'], 16)} "
-                  f"{pct(r['done'], r['total'])}  {tail}")
-
     rule("highlights")
     if partial:
         closest = min(partial, key=lambda r: r["total"] - r["done"])
@@ -628,7 +626,7 @@ def main_menu(client, args):
              ("complete", "Complete lessons", "pick a year and module, or do them all")],
             lambda row: col("cream", f"{row[1]:<18}") + "  " + mute(row[2]))
         if kind == "quit":
-            print(mute("\n  Bye.\n"))
+            print(mute(f"\n  {random.choice(FAREWELLS)}\n"))
             return
         if choice[0] == "status":
             rows = status_flow(client, args, modules)
@@ -699,7 +697,7 @@ def cmd_complete(client, args):
 
 
 def main():
-    global COLOR, TRUECOLOR, PROGRESS, THEME
+    global COLOR, TRUECOLOR, PROGRESS, THEME, BAR
     p = argparse.ArgumentParser(
         prog="cyl",
         description="cyl - Complete Your Lessons. Progress dashboard and bulk lesson "
@@ -713,6 +711,8 @@ def main():
     p.add_argument("--no-color", action="store_true", help="disable coloured output")
     p.add_argument("--theme", choices=sorted(THEMES), default="gold",
                    help="logo colour theme (default gold)")
+    p.add_argument("--bar", choices=sorted(BAR_STYLES), default="boxes",
+                   help="progress bar glyphs (default boxes)")
     p.add_argument("--version", action="version", version=f"cyl {VERSION}")
     sub = p.add_subparsers(dest="cmd")
 
@@ -743,6 +743,7 @@ def main():
              and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb")
     TRUECOLOR = os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
     THEME = args.theme
+    BAR = args.bar
 
     if args.cmd in ("lessons", "complete") and not args.module and not args.all:
         sys.exit("Pass -m <module> (repeatable) or --all, "
