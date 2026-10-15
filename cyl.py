@@ -19,7 +19,6 @@ from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.parse
 import urllib.request
-
 VERSION = "1.1.0"
 API = "https://api.c4mpus.com"
 API_HOST = "api.c4mpus.com"
@@ -705,7 +704,7 @@ def main_menu(client, args):
     while True:
         kind, choice = choose(
             "What do you want to do?",
-            [("status", "Check progress", "a full breakdown of every module and year"),
+            [("status", "Check progress", "totals, a bar per year, and highlights"),
              ("complete", "Complete lessons", "pick a year and module, or do them all")],
             lambda row: col("cream", f"{row[1]:<18}") + "  " + mute(row[2]))
         if kind == "quit":
