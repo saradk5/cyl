@@ -71,6 +71,26 @@ COLOR = True
 TRUECOLOR = True
 PROGRESS = True
 
+# Pixel-art mortarboard, two bitmap rows per terminal row via half blocks
+# (the trick kiterunner's banner uses). Each cell is an ink key from ART_INK,
+# "." is transparent, so the art inherits the terminal background.
+ART = [
+    "..........GGGG..........",
+    ".......GGGGGGGGGG.......",
+    "....GGGGGGGGGGGGGGGG....",
+    ".GGGGGGGGGGGGGGGGGGGGGG.",
+    "...EEEEEEEEEEEEEEEEEE.C.",
+    "......EEEEEEEEEEEE....C.",
+    ".......CCCCCCCCCC.....C.",
+    ".......EEEEEEEEEE.....C.",
+    "........EEEEEEEE.....KKK",
+    ".........EEEEEE......KKK",
+    "......................KK",
+    "........................",
+]
+# G/E follow the logo theme, so --theme recolours the cap with the wordmark.
+ART_INK = {"G": "face", "E": "shadow", "C": "cream", "K": "brick"}
+
 LOGO = [
     " ██████╗██╗   ██╗██╗     ",
     "██╔════╝╚██╗ ██╔╝██║     ",
@@ -102,20 +122,69 @@ def b(text):  return col("cream", text, bold=True)
 def mute(t):  return col("stone", t)
 
 
-def banner():
-    """Two-tone logo: solid faces in the theme hue, the font's own shadow
+def rgb(hex6, bg=False):
+    r, g, b = (int(hex6[i:i + 2], 16) for i in (0, 2, 4))
+    return f"\033[{48 if bg else 38};2;{r};{g};{b}m"
+
+
+def art_lines():
+    """The bitmap as half-block rows: upper pixel is the glyph's foreground,
+    lower pixel its background. Needs truecolor, so returns [] without it."""
+    if not (COLOR and TRUECOLOR):
+        return []
+    face, shadow = THEMES.get(THEME, THEMES["gold"])
+    ink = {"face": face[0], "shadow": shadow[0],
+           "cream": PALETTE["cream"][0], "brick": PALETTE["brick"][0]}
+
+    def hue(ch):
+        return ink.get(ART_INK.get(ch, ""), "")
+
+    lines = []
+    for top, bottom in zip(ART[::2], ART[1::2]):
+        cells = []
+        for t, b in zip(top, bottom):
+            up, down = hue(t), hue(b)
+            if up and down:
+                cells.append(rgb(up) + rgb(down, True) + "▀\033[0m")
+            elif up:
+                cells.append(rgb(up) + "▀\033[0m")
+            elif down:
+                cells.append(rgb(down) + "▄\033[0m")
+            else:
+                cells.append(" ")
+        lines.append("".join(cells))
+    return lines
+
+
+def logo_lines():
+    """Two-tone wordmark: solid faces in the theme hue, the font's own shadow
     in a darker value of the same hue."""
     face, shadow = THEMES.get(THEME, THEMES["gold"])
+    out = []
     for line in LOGO:
-        out = []
+        glyphs = []
         for ch in line:
             if ch == "█":
-                out.append(tint(face, ch, bold=True))
+                glyphs.append(tint(face, ch, bold=True))
             elif ch in SHADOW_GLYPHS:
-                out.append(tint(shadow, ch))
+                glyphs.append(tint(shadow, ch))
             else:
-                out.append(ch)
-        print("  " + "".join(out))
+                glyphs.append(ch)
+        out.append("".join(glyphs))
+    return out
+
+
+def banner():
+    """The cap beside the wordmark, or the wordmark alone on a terminal
+    without truecolor (half blocks need per-cell backgrounds)."""
+    art, logo = art_lines(), logo_lines()
+    room = shutil.get_terminal_size((88, 24)).columns
+    if art and room >= len(ART[0]) + 25 + 4:
+        for left, right in zip(art, logo):
+            print("  " + left + "  " + right)
+    else:
+        for line in logo:
+            print("  " + line)
     print("  " + col("cream", "complete your lessons") + "  "
           + col("slate", "·") + "  " + mute(f"v{VERSION}"))
     print("  " + col("slate", "─" * 25))
@@ -723,6 +792,7 @@ def main():
                    help="seconds between start and mark-as-complete (default 0.25)")
     p.add_argument("-y", "--yes", action="store_true", help="skip confirmation prompts")
     p.add_argument("--no-color", action="store_true", help="disable coloured output")
+    p.add_argument("-q", "--quiet", action="store_true", help="hide the startup banner")
     p.add_argument("--theme", choices=sorted(THEMES), default="gold",
                    help="logo colour theme (default gold)")
     p.add_argument("--bar", choices=sorted(BAR_STYLES), default="boxes",
@@ -763,7 +833,7 @@ def main():
         sys.exit("Pass -m <module> (repeatable) or --all, "
                  "or run with no arguments to pick interactively.")
 
-    if args.cmd is None:
+    if args.cmd is None and not args.quiet:
         banner()
 
     token = load_token(args.token, interactive=args.cmd is None)
