@@ -559,6 +559,24 @@ def choose(title, rows, labeller, extras=()):
                    + (", " + "/".join(sorted(valid)) if valid else "") + ", or q."))
 
 
+def progress_tag(done, total):
+    """The state chip shared by the year and module choosers."""
+    if not total:
+        return mute("(no lessons)")
+    if done >= total:
+        return col("sage", "(completed)")
+    if not done:
+        return mute("(not started)")
+    return col("gold", f"{total - done} left")
+
+
+def module_label(r):
+    """One line for a scanned module in a chooser: title, count, state."""
+    return (f"{r['title'][:44]:<44} "
+            + mute(f"{r['done']}/{r['total']}".rjust(7)) + "  "
+            + progress_tag(r["done"], r["total"]))
+
+
 def complete_flow(client, args, modules):
     years = []
     for m in modules:
@@ -566,38 +584,45 @@ def complete_flow(client, args, modules):
             years.append(m["year"])
 
     while True:
-        def year_label(y):
-            n = sum(1 for m in modules if m["year"] == y)
-            return f"{y:<12}" + mute(f"{n} modules")
+        # Re-read every loop so a year finished in the last run reads as done.
+        print(mute(f"\n  Reading {len(modules)} module(s)..."))
+        all_rows = scan(client, modules, note="reading")
 
+        def year_label(y):
+            yr = [r for r in all_rows if r["year"] == y]
+            yd, yt = sum(r["done"] for r in yr), sum(r["total"] for r in yr)
+            return (f"{y:<12}" + mute(f"{len(yr)} modules".ljust(11)) + "  "
+                    + mute(f"{yd}/{yt}".rjust(8)) + "  " + progress_tag(yd, yt))
+
+        total_done = sum(r["done"] for r in all_rows)
+        total_all = sum(r["total"] for r in all_rows)
         kind, year = choose("Which year?", years, year_label,
                             extras=[("a", col("gold", "All years", bold=True)
-                                     + f" · every module ({len(modules)})")])
+                                     + f" · every module ({len(modules)})  "
+                                     + progress_tag(total_done, total_all))])
         if kind == "quit":
             return
         if kind == "extra":
-            rows = scan(client, modules)
-            execute(client, rows, args, "All years")
+            execute(client, all_rows, args, "All years")
             if not confirm("  Back to the menu?"):
                 return
             continue
 
-        in_year = [m for m in modules if m["year"] == year]
+        rows = [r for r in all_rows if r["year"] == year]
+
         kind, module = choose(
-            f"{year} · which module?", in_year, lambda m: m["title"],
+            f"{year} · which module?", rows, module_label,
             extras=[("a", col("gold", "All modules", bold=True)
-                     + f" in {col('cream', year)} ({len(in_year)})"),
+                     + f" in {col('cream', year)} ({len(rows)})"),
                     ("b", col("cream", "Back") + mute(" to years"))])
         if kind == "quit":
             return
         if kind == "extra" and module == "b":
             continue
 
-        targets = in_year if kind == "extra" else [module]
+        targets = rows if kind == "extra" else [module]
         what = f"all of {year}" if kind == "extra" else module["title"]
-        print(mute(f"\n  Checking {len(targets)} module(s)..."))
-        rows = scan(client, targets)
-        execute(client, rows, args, what)
+        execute(client, targets, args, what)
         if not confirm("  Back to the menu?"):
             return
 
