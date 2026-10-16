@@ -64,6 +64,9 @@ BAR_STYLES = {
 }
 BAR = "boxes"
 
+# A module this close to done is worth finishing now rather than later.
+QUICK_WIN = 3
+
 FAREWELLS = ("Bye.", "Adios.", "Au revoir.")
 
 COLOR = True
@@ -78,17 +81,17 @@ ART = [
     ".......GGGGGGGGGG.......",
     "....GGGGGGGGGGGGGGGG....",
     ".GGGGGGGGGGGGGGGGGGGGGG.",
-    "...EEEEEEEEEEEEEEEEEE.C.",
-    "......EEEEEEEEEEEE....C.",
-    ".......CCCCCCCCCC.....C.",
-    ".......EEEEEEEEEE.....C.",
+    "...EEEEEEEEEEEEEEEEEE.D.",
+    "......EEEEEEEEEEEE....D.",
+    ".......CCCCCCCCCC.....D.",
+    ".......EEEEEEEEEE.....D.",
     "........EEEEEEEE.....KKK",
     ".........EEEEEE......KKK",
     "......................KK",
     "........................",
 ]
 # G/E follow the logo theme, so --theme recolours the cap with the wordmark.
-ART_INK = {"G": "face", "E": "shadow", "C": "cream", "K": "brick"}
+ART_INK = {"G": "face", "E": "shadow", "C": "cream", "D": "cream", "K": "brick"}
 
 LOGO = [
     " ██████╗██╗   ██╗██╗     ",
@@ -211,6 +214,11 @@ def pct(done, total):
     return f"{min(99, max(1, round(100 * done / total))):>3}%"
 
 
+def seconds_per_lesson(args):
+    """Both throttles plus what the three API calls per lesson actually cost."""
+    return args.delay + args.dwell + 0.35
+
+
 def wk(week, width=5):
     """Not every lesson comes back with a week number; "wk?" beats a crash."""
     return f"wk{(week if week is not None else '?'):<{width}}"
@@ -265,7 +273,10 @@ GRAB_TOKEN_HELP = f"""\
 {mute('It only reads your own token and sends it nowhere.')}
 
 {mute('Console blocked? Network tab -> any api.c4mpus.com request -> Copy as cURL,')}
-{mute('then paste that instead. cyl digs the token out of whatever you paste.')}"""
+{mute('then paste that instead. cyl digs the token out of whatever you paste.')}
+
+{col('gold', 'Done with it?')} {mute('Logging out of c4mpus in the browser expires the token')}
+{mute('immediately, everywhere. Until then it stays valid even after')} {col('teal', 'cyl logout')}{mute('.')}"""
 
 
 class ApiError(Exception):
@@ -325,8 +336,11 @@ def prompt_for_token():
         token = extract_jwt(raw)
         if token and decode_token(token):
             save_token(token)
-            who, _, _ = describe_token(token)
+            who, exp, _ = describe_token(token)
             print(col("sage", f"  ✓ saved {who} to {TOKEN_FILE}") + mute(" (mode 600)"))
+            if exp:
+                print(mute(f"  Valid until {exp:%d %b %H:%M}. Log out of c4mpus "
+                           "to expire it sooner."))
             return token
         print(col("brick", "  Couldn't find a token in that.")
               + mute(f" {2 - attempt} attempt(s) left."))
@@ -433,10 +447,20 @@ class Client:
         return json.loads(payload or b"{}")
 
     def modules(self, years=YEARS):
-        out, seen = [], set()
-        for year in years:
+        if not years:
+            return []
+
+        def fetch(year):
             q = urllib.parse.urlencode({"year": year}, quote_via=urllib.parse.quote)
-            for m in self._call("GET", f"/users/my-learnings?{q}").get("modules") or []:
+            return year, self._call("GET", f"/users/my-learnings?{q}").get("modules") or []
+
+        # One request per year, in parallel; map keeps them in YEARS order.
+        with ThreadPoolExecutor(max_workers=len(years)) as pool:
+            batches = list(pool.map(fetch, years))
+
+        out, seen = [], set()
+        for year, found in batches:
+            for m in found:
                 slug = m.get("moduleSlug")
                 if slug and slug not in seen:
                     seen.add(slug)
@@ -503,7 +527,7 @@ def scan(client, modules, done=None, note="scanning", workers=8):
 
 # --------------------------------------------------------------------- status
 
-def render_status(rows, scope):
+def render_status(rows, scope, pace=None):
     total = sum(r["total"] for r in rows)
     done = sum(r["done"] for r in rows)
     gradeable = [r for r in rows if r["total"]]
@@ -536,11 +560,20 @@ def render_status(rows, scope):
             print()
 
     rule("highlights")
-    if partial:
-        closest = min(partial, key=lambda r: r["total"] - r["done"])
-        left = closest["total"] - closest["done"]
-        print("  " + mute(f"{'closest to done':<22}") + f" {closest['title']} "
-              + mute("· ") + col("gold", f"{left} left"))
+    pad = " " * 25            # line up under the value column, not the label
+    nearly = sorted((r for r in gradeable if r["done"] < r["total"]
+                     and r["total"] - r["done"] <= QUICK_WIN),
+                    key=lambda r: r["total"] - r["done"])
+    if nearly:
+        cost = sum(r["total"] - r["done"] for r in nearly)
+        print("  " + mute(f"{'quick wins':<22}") + " "
+              + col("sage", plural(len(nearly), "module")) + mute(" · ")
+              + col("gold", plural(cost, "lesson")) + mute(" to finish them"))
+        for r in nearly[:4]:
+            print(pad + mute("· ") + f"{r['title'][:44]:<44} "
+                  + col("gold", f"{r['total'] - r['done']:>3} left"))
+        if len(nearly) > 4:
+            print(pad + mute(f"· and {len(nearly) - 4} more"))
     if rows:
         biggest = max(rows, key=lambda r: r["total"] - r["done"])
         if biggest["total"] - biggest["done"]:
@@ -552,14 +585,15 @@ def render_status(rows, scope):
         print("  " + mute(f"{'not started':<22}") + " "
               + col("stone", plural(len(untouched), "module")))
 
-    worst_weeks = {}
-    for r in rows:
-        for l in r["todo"]:
-            worst_weeks[l["week"]] = worst_weeks.get(l["week"], 0) + 1
-    if worst_weeks:
-        top = sorted(worst_weeks.items(), key=lambda kv: -kv[1])[:5]
-        print("  " + mute(f"{'weeks most behind':<22}") + " "
-              + mute(" · ").join(f"{wk(w, 0)} {col('gold', str(n))}" for w, n in top))
+    pending = sum(l["assessments"] for r in rows for l in r["todo"])
+    if assessments:
+        print("  " + mute(f"{'assessments pending':<22}") + " "
+              + col("gold" if pending else "sage", str(pending))
+              + mute(f" of {assessments}"))
+    if pace and total > done:
+        print("  " + mute(f"{'clearing it all':<22}") + " "
+              + col("teal", plural(total - done, "lesson")) + mute(" · about ")
+              + col("cream", human_time((total - done) * pace)))
     print()
 
 
@@ -567,7 +601,7 @@ def status_flow(client, args, modules=None):
     modules = modules or client.modules()
     print(mute("\n  Reading your progress across all modules..."))
     rows = scan(client, modules, note="reading")
-    render_status(rows, "overall progress")
+    render_status(rows, "overall progress", seconds_per_lesson(args))
     return rows
 
 
@@ -619,7 +653,7 @@ def execute(client, rows, args, what):
     jobs = [(r, l) for r in rows for l in r["todo"]]
     if not jobs:
         print("\n  " + col("sage", f"Nothing to do - {what} is already complete."))
-        return
+        return 0
 
     rule(f"plan · {what}")
     if len(rows) > 1:
@@ -633,15 +667,16 @@ def execute(client, rows, args, what):
     print(f"\n  {col('teal', str(len(jobs)))} lesson(s) across "
           f"{col('teal', str(len({r['slug'] for r, _ in jobs})))} module(s)")
 
-    est = len(jobs) * (args.delay + args.dwell + 0.35)
+    est = len(jobs) * seconds_per_lesson(args)
     if not (args.yes or confirm(f"  Complete all {len(jobs)} lesson(s)? "
                                 + mute("~" + human_time(est)))):
         print(mute("  Cancelled - nothing was sent."))
-        return
+        return 0
 
     ok, failed = run_completion(client, jobs, args.delay, args.dwell)
     print(f"\n  {col('sage', str(ok) + ' completed')}"
           + (f", {col('brick', str(failed) + ' failed')}" if failed else "") + ".")
+    return ok
 
 
 def choose(title, rows, labeller, extras=()):
@@ -683,16 +718,19 @@ def module_label(r):
             + progress_tag(r["done"], r["total"]))
 
 
-def complete_flow(client, args, modules):
+def complete_flow(client, args, modules, cached=None):
+    """cached: rows an earlier scan already produced, reused rather than
+    refetched. Dropped whenever lessons get marked, never otherwise."""
     years = []
     for m in modules:
         if m["year"] not in years:
             years.append(m["year"])
 
+    all_rows = cached
     while True:
-        # Re-read every loop so a year finished in the last run reads as done.
-        print(mute(f"\n  Reading {len(modules)} module(s)..."))
-        all_rows = scan(client, modules, note="reading")
+        if all_rows is None:
+            print(mute(f"\n  Reading {len(modules)} module(s)..."))
+            all_rows = scan(client, modules, note="reading")
 
         def year_label(y):
             yr = [r for r in all_rows if r["year"] == y]
@@ -709,7 +747,8 @@ def complete_flow(client, args, modules):
         if kind == "quit":
             return
         if kind == "extra":
-            execute(client, all_rows, args, "All years")
+            if execute(client, all_rows, args, "All years"):
+                all_rows = None
             if not confirm("  Back to the menu?"):
                 return
             continue
@@ -728,7 +767,8 @@ def complete_flow(client, args, modules):
 
         targets = rows if kind == "extra" else [module]
         what = f"all of {year}" if kind == "extra" else module["title"]
-        execute(client, targets, args, what)
+        if execute(client, targets, args, what):
+            all_rows = None
         if not confirm("  Back to the menu?"):
             return
 
@@ -751,7 +791,7 @@ def main_menu(client, args):
         if choice[0] == "status":
             rows = status_flow(client, args, modules)
             if confirm("  Complete lessons now?"):
-                complete_flow(client, args, modules)
+                complete_flow(client, args, modules, cached=rows)
         else:
             complete_flow(client, args, modules)
 
@@ -789,7 +829,7 @@ def cmd_modules(client, args):
 def cmd_status(client, args):
     modules = resolve_modules(client, args) if (args.module or args.all) else client.modules()
     rows = scan(client, modules, note="reading")
-    render_status(rows, "overall progress")
+    render_status(rows, "overall progress", seconds_per_lesson(args))
 
 
 def cmd_lessons(client, args):
@@ -846,6 +886,8 @@ def main():
     sp.add_argument("--snippet", action="store_true",
                     help="print just the console one-liner (pipe it to pbcopy)")
 
+    sub.add_parser("logout", help="delete the saved token from this machine")
+
     sub.add_parser("modules", help="list enrolled modules").set_defaults(fn=cmd_modules)
 
     sp = sub.add_parser("status", help="progress dashboard")
@@ -873,6 +915,15 @@ def main():
     if args.cmd in ("lessons", "complete") and not args.module and not args.all:
         sys.exit("Pass -m <module> (repeatable) or --all, "
                  "or run with no arguments to pick interactively.")
+
+    if args.cmd == "logout":
+        had = TOKEN_FILE.exists()
+        TOKEN_FILE.unlink(missing_ok=True)
+        print(col("sage", "  ✓ ") + (f"deleted {TOKEN_FILE}" if had
+                                     else "nothing saved on this machine"))
+        print(mute("  That only clears this machine. The token itself stays valid"))
+        print(mute("  until it expires - log out of c4mpus to kill it right now."))
+        return
 
     # login runs before load_token: it is how you get a token in the first place.
     if args.cmd == "login":
